@@ -1,9 +1,9 @@
-name: Build libimobiledevice binaries
+name: Build libimobiledevice (skip cython)
 
 on:
   push:
     tags:
-      - '*'
+      - 'v*'
   workflow_dispatch:
 
 jobs:
@@ -12,91 +12,77 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
+        # 这里可以根据需要添加更多版本或架构
 
     env:
-      PREFIX: ${{ github.workspace }}/install
+      LIBPLIST_VERSION: 2.7.0
+      LIBUSBMUXD_VERSION: 2.1.0
+      LIBIMOBILEDEVICE_VERSION: 1.3.0
 
     steps:
-    - name: Checkout code
+    - name: Checkout source
       uses: actions/checkout@v3
 
-    - name: Setup dependencies (Linux)
+    - name: Install dependencies on Linux
       if: matrix.os == 'ubuntu-latest'
       run: |
         sudo apt-get update
-        sudo apt-get install -y \
-          build-essential autoconf automake libtool pkg-config \
-          libplist-dev libssl-dev libusb-1.0-0-dev \
-          libcurl4-openssl-dev libreadline-dev libzip-dev cython3 python3-dev python3-pip
+        sudo apt-get install -y build-essential autoconf automake libtool pkg-config gettext curl
 
-    - name: Setup dependencies (macOS)
+    - name: Install dependencies on macOS
       if: matrix.os == 'macos-latest'
       run: |
-        brew update
-        brew install autoconf automake libtool pkg-config libplist openssl libusb curl readline zip python cython
+        brew install autoconf automake libtool pkg-config gettext curl
 
-    - name: Setup dependencies (Windows)
+    - name: Install dependencies on Windows
       if: matrix.os == 'windows-latest'
       run: |
-        choco install -y mingw cmake pkgconfiglite python cython
-        # Add MinGW bin to PATH if needed
-        echo "::add-path::C:\\tools\\mingw64\\bin"
+        choco install -y msys2
+        echo "Ensure your MSYS2 environment is setup and packages like make, gcc, pkg-config are available"
 
-    # === 编译并安装 libusbmuxd, libplist, libimobiledevice 库 ===
-    - name: Download external dependencies (Linux & macOS)
-      if: matrix.os != 'windows-latest'
+    - name: Download dependency source tarballs
       run: |
-        # 下载三个库的tar包（示例，需替换为实际稳定版本链接）
-        wget https://github.com/libimobiledevice/libplist/archive/refs/tags/2.7.0.tar.gz
-        wget https://github.com/libimobiledevice/libusbmuxd/archive/refs/tags/2.1.0.tar.gz
-        wget https://github.com/libimobiledevice/libimobiledevice/archive/refs/tags/1.3.0.tar.gz
+        wget -O libplist-${{ env.LIBPLIST_VERSION }}.tar.gz https://github.com/libimobiledevice/libplist/archive/refs/tags/${{ env.LIBPLIST_VERSION }}.tar.gz
+        wget -O libusbmuxd-${{ env.LIBUSBMUXD_VERSION }}.tar.gz https://github.com/libimobiledevice/libusbmuxd/archive/refs/tags/${{ env.LIBUSBMUXD_VERSION }}.tar.gz
+        wget -O libimobiledevice-${{ env.LIBIMOBILEDEVICE_VERSION }}.tar.gz https://github.com/libimobiledevice/libimobiledevice/archive/refs/tags/${{ env.LIBIMOBILEDEVICE_VERSION }}.tar.gz
 
-        for pkg in libplist-2.2.0 libusbmuxd-2.2.0 libimobiledevice-2.0.2; do
-          tar xzf ${pkg}.tar.gz
-          cd $pkg
-          ./autogen.sh --prefix=$PREFIX --disable-cython
-          make -j$(nproc)
-          make install
-          cd ..
-        done
-
-    - name: Download and build external deps (Windows)
-      if: matrix.os == 'windows-latest'
+    - name: Extract dependency sources
       run: |
-        echo "Windows build external deps not yet automated."
-        exit 1
+        tar -xzf libplist-${{ env.LIBPLIST_VERSION }}.tar.gz
+        tar -xzf libusbmuxd-${{ env.LIBUSBMUXD_VERSION }}.tar.gz
+        tar -xzf libimobiledevice-${{ env.LIBIMOBILEDEVICE_VERSION }}.tar.gz
 
-    # 设置 PKG_CONFIG_PATH 让后续 configure 找到依赖
-    - name: Setup PKG_CONFIG_PATH
-      if: matrix.os != 'windows-latest'
-      run: echo "PKG_CONFIG_PATH=$PREFIX/lib/pkgconfig" >> $GITHUB_ENV
-
-    # 编译 libimobiledevice 项目本体
-    - name: Build libimobiledevice binary
-      if: matrix.os != 'windows-latest'
+    - name: Build and install libplist
       run: |
-        export PKG_CONFIG_PATH=$PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH
-        ./autogen.sh --prefix=$PREFIX --disable-cython
-        make -j$(nproc)
+        cd libplist-${{ env.LIBPLIST_VERSION }}
+        ./autogen.sh --prefix=$HOME/.local
+        make
         make install
 
-    # Windows 平台后续可自行补充编译步骤，或用 MSYS2/MinGW 编译
-
-    - name: Package binaries for release
+    - name: Build and install libusbmuxd
       run: |
-        mkdir -p release
-        if [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then
-          tar czf release/libimobiledevice-linux.tar.gz -C $PREFIX .
-        elif [[ "${{ matrix.os }}" == "macos-latest" ]]; then
-          tar czf release/libimobiledevice-macos.tar.gz -C $PREFIX .
-        elif [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-          # 这里做成zip包示例
-          powershell Compress-Archive -Path $PREFIX\* -DestinationPath release\libimobiledevice-windows.zip
-        fi
+        cd libusbmuxd-${{ env.LIBUSBMUXD_VERSION }}
+        ./autogen.sh --prefix=$HOME/.local PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig
+        make
+        make install
 
-    - name: Upload release asset
+    - name: Build libimobiledevice (skip cython)
+      run: |
+        cd libimobiledevice-${{ env.LIBIMOBILEDEVICE_VERSION }}
+        ./autogen.sh --prefix=$HOME/.local PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig
+        make
+        make install
+
+    - name: Package binaries
+      run: |
+        mkdir -p release_bin
+        # 这里示例只拷贝一个二进制文件，请根据需要调整
+        cp $HOME/.local/bin/ideviceinstaller release_bin/
+        ls -lh release_bin
+
+    - name: Upload release assets
       uses: softprops/action-gh-release@v1
       with:
-        files: release/*
+        files: release_bin/*
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
