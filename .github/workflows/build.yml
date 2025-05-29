@@ -2,85 +2,90 @@ name: build
 
 on:
   push:
+    branches: [master]
   pull_request:
-  schedule:
-    - cron: '0 0 1 * *'
-  workflow_dispatch:
 
 jobs:
-  build-linux-ubuntu:
+  build-linux:
     runs-on: ubuntu-latest
     steps:
-    - name: install dependencies
-      run: |
-          sudo apt-get update
-          pip install cython
-    - name: prepare environment
-      run: echo "target_triplet=`gcc -dumpmachine`" >> $GITHUB_ENV
-    - name: fetch libplist
-      uses: dawidd6/action-download-artifact@v6
-      with:
-        github_token: ${{secrets.GITHUB_TOKEN}}
-        workflow: build.yml
-        name: libplist-latest_${{env.target_triplet}}
-        repo: libimobiledevice/libplist
-    - name: fetch libusbmuxd
-      uses: dawidd6/action-download-artifact@v6
-      with:
-        github_token: ${{secrets.GITHUB_TOKEN}}
-        workflow: build.yml
-        name: libusbmuxd-latest_${{env.target_triplet}}
-        repo: libimobiledevice/libusbmuxd
-    - name: fetch libimobiledevice-glue
-      uses: dawidd6/action-download-artifact@v6
-      with:
-        github_token: ${{secrets.GITHUB_TOKEN}}
-        workflow: build.yml
-        name: libimobiledevice-glue-latest_${{env.target_triplet}}
-        repo: libimobiledevice/libimobiledevice-glue
-    - name: fetch libtatsu
-      uses: dawidd6/action-download-artifact@v6
-      with:
-        github_token: ${{secrets.GITHUB_TOKEN}}
-        workflow: build.yml
-        name: libtatsu-latest_${{env.target_triplet}}
-        repo: libimobiledevice/libtatsu
-    - name: install external dependencies
-      run: |
-          mkdir extract
-          for I in *.tar; do
-            tar -C extract -xvf $I
-          done
-          sudo cp -r extract/* /
-          sudo ldconfig
-    - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-    - name: autogen
-      run: ./autogen.sh PKG_CONFIG_PATH=/usr/local/lib/pkgconfig LDFLAGS="-Wl,-rpath=/usr/local/lib" --enable-debug
-    - name: make
-      run: make
-    - name: make install
-      run: sudo make install
-    - name: prepare release asset
-      run: |
-          mkdir -p dest
-          DESTDIR=`pwd`/dest make install
-          tar -C dest -czf libimobiledevice-${{ env.target_triplet }}.tar.gz usr
-    - name: Create Release (if not exists)
-      uses: softprops/action-gh-release@v1
-      if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-      with:
-        tag_name: nightly-${{ github.run_number }}
-        name: "Nightly Build #${{ github.run_number }}"
-        draft: false
-        prerelease: true
-        token: ${{ secrets.GITHUB_TOKEN }}
-    - name: Upload Release Asset
-      uses: softprops/action-gh-release@v1
-      with:
-        tag_name: nightly-${{ github.run_number }}
-        files: libimobiledevice-${{ env.target_triplet }}.tar.gz
-        token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y --no-install-recommends \
+            autoconf automake libtool \
+            libimobiledevice-glue-dev libplist-dev \
+            libusbmuxd-dev libssl-dev \
+            libzip-dev make gcc pkg-config tar
+      - name: Build
+        run: |
+          ./autogen.sh --without-cython
+          make -j$(nproc)
+          make install DESTDIR=$PWD/dest
+          tar -C dest -cf libimobiledevice-linux.tar usr
+      - name: Upload Release
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: nightly-${{ github.run_number }}
+          name: Nightly Build ${{ github.run_number }}
+          files: libimobiledevice-linux.tar
 
-# 可根据此结构继续扩展 build-macOS 与 build-windows 的 Release 上传逻辑
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          brew install autoconf automake libtool libzip openssl libplist libusbmuxd
+      - name: Build
+        run: |
+          export LDFLAGS="-L/opt/homebrew/lib"
+          export CPPFLAGS="-I/opt/homebrew/include"
+          ./autogen.sh --without-cython
+          make -j$(sysctl -n hw.ncpu)
+          make install DESTDIR=$PWD/dest
+          tar -C dest -cf libimobiledevice-macos.tar usr
+      - name: Upload Release
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: nightly-${{ github.run_number }}
+          name: Nightly Build ${{ github.run_number }}
+          files: libimobiledevice-macos.tar
+
+  build-windows:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        arch: [x64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          choco install -y msys2
+      - name: Build
+        shell: msys2 {0}
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm \
+            autoconf automake libtool pkg-config make tar \
+            mingw-w64-${{ matrix.arch }}-gcc \
+            mingw-w64-${{ matrix.arch }}-libimobiledevice-glue \
+            mingw-w64-${{ matrix.arch }}-libplist \
+            mingw-w64-${{ matrix.arch }}-libusbmuxd \
+            mingw-w64-${{ matrix.arch }}-openssl \
+            mingw-w64-${{ matrix.arch }}-libzip
+          export PATH="/mingw64/bin:$PATH"
+          ./autogen.sh --without-cython
+          make -j$(nproc)
+          make install DESTDIR=$PWD/dest
+          tar -C dest -cf libimobiledevice-windows-${{ matrix.arch }}.tar usr
+      - name: Upload Release
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: nightly-${{ github.run_number }}
+          name: Nightly Build ${{ github.run_number }}
+          files: libimobiledevice-windows-${{ matrix.arch }}.tar
